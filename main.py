@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Depends, Body
 from pydantic import BaseModel
 from typing import Optional
 from models import InputFormat
@@ -12,10 +12,9 @@ import uvicorn
 # DEPLOYMENT CONFIGURATION
 # -------------------------------------------------
 
-# Read PORT from environment (required for Render/Railway)
 PORT = int(os.getenv("PORT", 8000))
 
-# HARD-CODED API KEY (Hackathon-safe, no env confusion)
+# HARD-CODED API KEY (Hackathon-safe)
 EXPECTED_API_KEY = "secret-hackathon-key"
 
 # -------------------------------------------------
@@ -32,10 +31,9 @@ logger = logging.getLogger("honeypot_api")
 app = FastAPI(
     title="Agentic Honeypot API",
     description="A Hackathon-grade Scam Detection & Honeypot System",
-    version="1.0.1"
+    version="1.0.2"
 )
 
-# Singleton Session Manager
 session_manager = SessionManager()
 
 # -------------------------------------------------
@@ -51,10 +49,6 @@ class GuviResponse(BaseModel):
 # -------------------------------------------------
 
 async def verify_api_key(x_api_key: str = Header(...)):
-    """
-    Validates API Key from `x-api-key` header.
-    Returns 401 if invalid.
-    """
     if x_api_key != EXPECTED_API_KEY:
         logger.warning(f"Auth Failed. Key used: {x_api_key}")
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -66,10 +60,6 @@ async def verify_api_key(x_api_key: str = Header(...)):
 
 @app.get("/")
 def home():
-    """
-    Health check endpoint.
-    Useful to verify deployment status.
-    """
     return {
         "message": "Agentic Honeypot API is Running!",
         "status": "active",
@@ -78,31 +68,36 @@ def home():
 
 @app.post("/api/honeypot", response_model=GuviResponse)
 async def honeypot_endpoint(
-    data: InputFormat,
     background_tasks: BackgroundTasks,
-    api_key: str = Depends(verify_api_key)
+    api_key: str = Depends(verify_api_key),
+    data: Optional[InputFormat] = Body(default=None)
 ):
     """
     Main Honeypot Endpoint.
-    - Secure (API key protected)
-    - Robust (never crashes)
-    - Strict (GUVI-compliant response)
+    - GUVI Tester Compatible
+    - Secure
+    - Production-safe
     """
+
+    # ✅ GUVI Endpoint Tester sends empty body
+    if data is None:
+        return GuviResponse(
+            status="success",
+            reply="Hello! How can I help you today?"
+        )
+
     try:
         session_id = data.sessionId
         user_message = data.message.text
 
-        # 1. Process message via SessionManager
         result = session_manager.process_message(session_id, user_message)
 
-        # 2. Trigger GUVI callback asynchronously (ONLY ONCE)
         if result.get("callbackTrigger"):
             session_state = session_manager.get_session(session_id)
             session_data = session_state.model_dump()
             background_tasks.add_task(send_final_callback, session_data)
             logger.info(f"GUVI callback queued for session: {session_id}")
 
-        # 3. Return strict response
         return GuviResponse(
             status="success",
             reply=result.get("reply")
@@ -113,7 +108,7 @@ async def honeypot_endpoint(
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 # -------------------------------------------------
-# ENTRY POINT (LOCAL + DEPLOYMENT)
+# ENTRY POINT
 # -------------------------------------------------
 
 if __name__ == "__main__":
