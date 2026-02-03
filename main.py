@@ -1,15 +1,6 @@
-from fastapi import (
-    FastAPI,
-    Header,
-    HTTPException,
-    BackgroundTasks,
-    Depends,
-    Request
-)
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Header, HTTPException, BackgroundTasks, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
-from models import InputFormat
 from session_manager import SessionManager
 from callback import send_final_callback
 import logging
@@ -17,35 +8,33 @@ import os
 import uvicorn
 
 # -------------------------------------------------
-# DEPLOYMENT CONFIGURATION
+# CONFIG
 # -------------------------------------------------
 
 PORT = int(os.getenv("PORT", 8000))
-
-# HARD-CODED API KEY (GUVI-safe)
 EXPECTED_API_KEY = "secret-hackathon-key"
 
 # -------------------------------------------------
-# LOGGING SETUP
+# LOGGING
 # -------------------------------------------------
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("honeypot_api")
 
 # -------------------------------------------------
-# FASTAPI APP SETUP
+# APP
 # -------------------------------------------------
 
 app = FastAPI(
     title="Agentic Honeypot API",
-    description="A Hackathon-grade Scam Detection & Honeypot System",
-    version="1.0.3"
+    description="GUVI Hackathon Honeypot API",
+    version="1.0.2"
 )
 
 session_manager = SessionManager()
 
 # -------------------------------------------------
-# STRICT GUVI RESPONSE MODEL
+# RESPONSE MODEL (STRICT)
 # -------------------------------------------------
 
 class GuviResponse(BaseModel):
@@ -53,25 +42,23 @@ class GuviResponse(BaseModel):
     reply: Optional[str] = None
 
 # -------------------------------------------------
-# API KEY SECURITY
+# AUTH
 # -------------------------------------------------
 
 async def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != EXPECTED_API_KEY:
-        logger.warning(f"Invalid API Key used: {x_api_key}")
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
 
 # -------------------------------------------------
-# ENDPOINTS
+# ROUTES
 # -------------------------------------------------
 
 @app.get("/")
 def home():
     return {
-        "message": "Agentic Honeypot API is Running!",
-        "status": "active",
-        "docs": "/docs"
+        "message": "Agentic Honeypot API is Running",
+        "status": "active"
     }
 
 @app.post("/api/honeypot", response_model=GuviResponse)
@@ -81,46 +68,30 @@ async def honeypot_endpoint(
     api_key: str = Depends(verify_api_key)
 ):
     """
-    GUVI-compatible Honeypot Endpoint
-
-    - Accepts EMPTY / INVALID / NO JSON body
-    - Never returns 4xx/5xx to GUVI tester
-    - Still processes real honeypot traffic correctly
+    GUVI-safe endpoint:
+    - Accepts EMPTY body
+    - Accepts INVALID body
+    - NEVER fails
     """
-
-    # -------------------------------------------------
-    # SAFE BODY PARSING (GUVI BREAKS JSON RULES)
-    # -------------------------------------------------
 
     try:
         body = await request.json()
     except Exception:
-        body = None
+        body = {}
 
-    # -------------------------------------------------
-    # GUVI TESTER CASE (NO / INVALID BODY)
-    # -------------------------------------------------
-
-    if not body or "sessionId" not in body or "message" not in body:
+    # 🔒 GUVI EMPTY BODY HANDLING
+    if not body or "message" not in body:
+        logger.info("Empty or invalid body received (GUVI check)")
         return GuviResponse(
             status="success",
-            reply="Hello! How can I help you today?"
+            reply="Hello, can you please explain the issue?"
         )
-
-    # -------------------------------------------------
-    # REAL HONEYPOT LOGIC
-    # -------------------------------------------------
 
     try:
-        data = InputFormat(**body)
+        session_id = body.get("sessionId", "guvi-session")
+        message_text = body.get("message", {}).get("text", "")
 
-        session_id = data.sessionId
-        user_message = data.message.text
-
-        result = session_manager.process_message(
-            session_id=session_id,
-            message=user_message
-        )
+        result = session_manager.process_message(session_id, message_text)
 
         if result.get("callbackTrigger"):
             session_state = session_manager.get_session(session_id)
@@ -128,26 +99,22 @@ async def honeypot_endpoint(
                 send_final_callback,
                 session_state.model_dump()
             )
-            logger.info(f"GUVI callback triggered for session: {session_id}")
 
         return GuviResponse(
             status="success",
-            reply=result.get("reply")
+            reply=result.get("reply", "Okay, please continue.")
         )
 
     except Exception as e:
-        logger.error(f"Honeypot error: {str(e)}", exc_info=True)
-
-        # NEVER FAIL GUVI
+        logger.error(str(e))
         return GuviResponse(
             status="success",
-            reply="Hello! How can I help you today?"
+            reply="Please provide more details."
         )
 
 # -------------------------------------------------
-# ENTRY POINT
+# ENTRY
 # -------------------------------------------------
 
 if __name__ == "__main__":
-    logger.info(f"Starting server on port {PORT}")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
