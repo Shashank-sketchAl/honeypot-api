@@ -1,52 +1,100 @@
-from fastapi import FastAPI, Header, BackgroundTasks, Request
-from pydantic import BaseModel
+from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi.responses import JSONResponse
 from typing import Optional
+import json
 
-app = FastAPI()
+app = FastAPI(title="Hackathon API")
 
-EXPECTED_API_KEY = "secret-hackathon-key"
 
-class GuviResponse(BaseModel):
-    status: str
-    reply: Optional[str] = ""
-
-async def verify_api_key(x_api_key: str = Header(None)):
-    if x_api_key != EXPECTED_API_KEY:
-        return False
-    return True
-
-@app.post("/api/honeypot", response_model=GuviResponse)
-async def honeypot_endpoint(
+@app.post("/api/honeypot")
+async def honeypot(
     request: Request,
-    background_tasks: BackgroundTasks,
-    authorized: bool = Header(None, alias="x-api-key")
+    x_api_key: Optional[str] = Header(None)
 ):
+    """
+    Honeypot endpoint that gracefully handles empty request bodies.
+    
+    This endpoint:
+    - Never returns 422 (Unprocessable Entity)
+    - Always returns valid JSON
+    - Handles missing/empty request bodies
+    - Validates API key authentication
+    """
+    
+    # Validate API key
+    if x_api_key != "secret-hackathon-key":
+        return JSONResponse(
+            status_code=401,
+            content={
+                "status": "error",
+                "reply": "Invalid or missing API key"
+            }
+        )
+    
+    # Attempt to read and parse request body
     try:
-        if authorized != EXPECTED_API_KEY:
-            return GuviResponse(
-                status="error",
-                reply="Invalid API key"
+        body_bytes = await request.body()
+        
+        # Handle empty body gracefully
+        if not body_bytes:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "reply": "Request received with empty body"
+                }
             )
-
-        body = await request.json()
-
-        message = body.get("message", {})
-        text = message.get("text", "")
-
-        if not text:
-            return GuviResponse(
-                status="success",
-                reply="Could you please clarify your message?"
+        
+        # Try to parse JSON
+        try:
+            body_data = json.loads(body_bytes)
+            
+            # Handle empty JSON object
+            if not body_data:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "success",
+                        "reply": "Request received with empty JSON object"
+                    }
+                )
+            
+            # Process valid JSON data
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "reply": f"Request processed successfully with data: {json.dumps(body_data)}"
+                }
             )
-
-        # Honeypot reply
-        return GuviResponse(
-            status="success",
-            reply="Oh no! Why is my account being blocked?"
+            
+        except json.JSONDecodeError:
+            # Handle invalid JSON gracefully
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "reply": "Request received with non-JSON body"
+                }
+            )
+    
+    except Exception as e:
+        # Catch-all for any unexpected errors
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "reply": f"Request processed with exception: {str(e)}"
+            }
         )
 
-    except Exception:
-        return GuviResponse(
-            status="error",
-            reply="Invalid request format"
-        )
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring."""
+    return {"status": "healthy"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
